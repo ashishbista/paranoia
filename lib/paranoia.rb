@@ -2,6 +2,8 @@ require 'active_record' unless defined? ActiveRecord
 
 module Paranoia
   @@default_sentinel_value = nil
+  @@track = false
+  @@destroyer_class = nil
 
   # Change default_sentinel_value in a rails initilizer
   def self.default_sentinel_value=(val)
@@ -10,6 +12,29 @@ module Paranoia
 
   def self.default_sentinel_value
     @@default_sentinel_value
+  end
+
+  def self.track?
+    @@track
+  end
+
+  def self.destroyer_class
+    @@destroyer_class
+  end
+
+  def self.destroyer=(class_name: nil)
+    if class_name
+      @@destroyer_class = class_name.constantize
+      @@track = true
+    end
+  end
+
+  def self.current_user
+    Thread.current[:user]
+  end
+
+  def self.current_user=(user)
+    Thread.current[:user] = user
   end
 
   def self.included(klazz)
@@ -113,10 +138,21 @@ module Paranoia
     # The object the method is being called on may be frozen
     # Let's not touch it if it's frozen.
     unless self.frozen?
+      change_hash =
+        if Paranoia.track?
+          {
+            'destroyer_id' => Paranoia.current_user.id,
+            paranoia_column => Time.now
+          }
+        else
+          {
+            paranoia_column => Time.now
+          }
+        end
       if with_transaction
-        with_transaction_returning_status { touch(paranoia_column) }
+        with_transaction_returning_status { self.update_columns(change_hash) }
       else
-        touch(paranoia_column)
+        self.update_columns(change_hash)
       end
     end
   end
@@ -156,6 +192,7 @@ class ActiveRecord::Base
   def self.acts_as_paranoid(options={})
     alias :destroy! :destroy
     alias :delete! :delete
+    belongs_to :deleted_by, class_name: Paranoia.destroyer_class.to_s, foreign_key: 'destroyer_id' if Paranoia.track?
     def really_destroy!
       dependent_reflections = self.class.reflections.select do |name, reflection|
         reflection.options[:dependent] == :destroy
